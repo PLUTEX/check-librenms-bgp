@@ -1,0 +1,142 @@
+#! /usr/bin/env bash
+# 2017, Paul PLUTEX <info@plutex.de>.
+# All rights reserved.
+
+# Redistribution and use in source and binary forms, with or without modification, are
+# permitted provided that the following conditions are met:
+#
+# * Redistributions of source code must retain the above copyright notice, this list of
+#   conditions and the following disclaimer.
+#
+# * Redistributions in binary form must reproduce the above copyright notice, this list
+#   of conditions and the following disclaimer in the documentation and/or other materials
+#   provided with the distribution.
+#
+# * The names of its contributors may not be used to endorse or promote products derived
+#   from this software without specific prior written permission.
+#
+# * Feel free to send Club Mate to support the work.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS
+# OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+# AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS
+# AND CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+# OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+# Set secure path
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# Exit codes
+declare -i STATE_OK=0
+declare -i STATE_WARNING=1
+declare -i STATE_CRITICAL=2
+declare -i STATE_UNKNOWN=3
+
+# Declare variables
+API_KEY=''
+API_URL=''
+DOMAIN_SUFFIX=''
+DEVICE_ID=''
+
+# Instanciate some variables
+BGP_SESSIONS=0
+BGP_SESSIONS_DOWN=0
+
+# Default error message
+ERR_MSG=''
+ERR_MSG_OK='all devices are up'
+ERR_MSG_SUFFIX='is down'
+
+# Parse arguments
+for ARG in "$@"; do
+  if [ "$ARG" = '-h' -o "$ARG" = '--help' ]; then
+    cat <<EOF
+LibreNMS device check
+usage: $(basename $0)
+
+--api-key=<token>
+  LibreNMS API token
+
+--api-url=<url>
+  LibreNMS Base URL (without the first slash)
+
+--domain-suffix=<suffix>
+  Domain suffix
+
+--device-id=<id>
+  First part of FQDN
+EOF
+    exit $STATE_UNKNOWN
+  elif [[ "$ARG" =~ ^--api-key= ]]; then
+    API_KEY="${ARG#--api-key=}"
+  elif [[ "$ARG" =~ ^--api-url= ]]; then
+    API_URL="${ARG#--api-url=}"
+  elif [[ "$ARG" =~ ^--domain-suffix= ]]; then
+    DOMAIN_SUFFIX="${ARG#--domain-suffix=}"
+  elif [[ "$ARG" =~ ^--device-id= ]]; then
+    DEVICE_ID="${ARG#--device-id=}"
+  fi
+done
+
+if [ -z "$API_KEY" ]; then
+  echo 'UNKNOWN: --api-key= not given!' >&2
+  exit $STATE_UNKNOWN
+elif [ -z "$API_URL" ]; then
+  echo 'UNKNOWN: --api-url= not given!' >&2
+  exit $STATE_UNKNOWN
+elif [ -z "$DOMAIN_SUFFIX" ]; then
+  echo 'UNKNOWN: --domain-suffix= not given!' >&2
+  exit $STATE_UNKNOWN
+elif [ -z "$DEVICE_ID" ]; then
+  echo 'UNKNOWN: --device-id= not given!' >&2
+  exit $STATE_UNKNOWN
+fi
+
+if ! curl --silent --fail -H "X-Auth-Token: ${API_KEY}" "${API_URL}/api/v0/devices/${DEVICE_ID}.${DOMAIN_SUFFIX}" >/dev/null; then
+  echo "UNKNOWN: ${DEVICE_ID} does not exist!" >&2
+  exit $STATE_UNKNOWN
+fi
+
+BGP_CONNECTIONS="$(curl --silent --fail -H "X-Auth-Token: ${API_KEY}" "${API_URL}/api/v0/bgp?hostname=${DEVICE_ID}.${DOMAIN_SUFFIX}")"
+
+while read BGP_CONNECTION; do
+  BGP_DEVICE_ID="$(jq '.device_id' <<<"$BGP_CONNECTION" | sed -e 's/"//g')"
+  BGP_PEER="$(jq '.bgpPeerIdentifier' <<<"$BGP_CONNECTION" | sed -e 's/"//g')"
+  BGP_STATE="$(jq '.bgpPeerState' <<<"$BGP_CONNECTION" | sed -e 's/"//g')"
+
+  # Increase device total count
+  BGP_SESSIONS=$(($BGP_SESSIONS+1))
+
+  if [ "$BGP_STATE" != 'established' ]; then
+    BGP_DEVICE_HOSTNAME="$(curl --silent --fail -H "X-Auth-Token: ${API_KEY}" "${API_URL}/api/v0/devices/${BGP_DEVICE_ID}" | jq '.devices[0] .hostname' | sed -e 's/"//g')"
+
+    if [ -z "$BGP_DEVICE_HOSTNAME" ]; then
+      continue
+    fi
+
+    # Increase device down count
+    BGP_SESSIONS_DOWN=$(($BGP_SESSIONS_DOWN+1))
+
+    ERR_CODE=$STATE_CRITICAL
+    ERR_MSG="${ERR_MSG}${BGP_DEVICE_HOSTNAME} <> ${BGP_PEER}, "
+  fi
+done < <(jq -c '.bgp_sessions[]' <<<"$BGP_CONNECTIONS")
+
+case $ERR_CODE in
+  $STATE_OK)
+    echo "OK: ${ERR_MSG_OK} | bgp_sessions=${BGP_SESSIONS}, bgp_sessions_down=${BGP_SESSIONS_DOWN}"
+  ;;
+  $STATE_UNKNOWN)
+    echo "UNKNOWN: ${ERR_MSG} | bgp_sessions=${BGP_SESSIONS}, bgp_sessions_down=${BGP_SESSIONS_DOWN}"
+  ;;
+  $STATE_CRITICAL)
+    echo "CRITICAL: $(sed -e 's/, $//g' <<<"$ERR_MSG") ${ERR_MSG_SUFFIX} | bgp_sessions=${BGP_SESSIONS}, bgp_sessions_down=${BGP_SESSIONS_DOWN}"
+  ;;
+esac
+
+# Exit
+exit $ERR_CODE
