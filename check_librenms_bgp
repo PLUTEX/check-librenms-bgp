@@ -32,7 +32,6 @@ PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
 # Exit codes
 declare -i STATE_OK=0
-declare -i STATE_WARNING=1
 declare -i STATE_CRITICAL=2
 declare -i STATE_UNKNOWN=3
 
@@ -53,10 +52,10 @@ ERR_MSG_SUFFIX='is down'
 
 # Parse arguments
 for ARG in "$@"; do
-  if [ "$ARG" = '-h' -o "$ARG" = '--help' ]; then
+  if [ "$ARG" = '-h' ] || [ "$ARG" = '--help' ]; then
     cat <<EOF
 LibreNMS device check
-usage: $(basename $0)
+usage: $(basename "$0")
 
 --api-key=<token>
   LibreNMS API token
@@ -103,13 +102,13 @@ fi
 
 BGP_CONNECTIONS="$(curl --silent --fail -H "X-Auth-Token: ${API_KEY}" "${API_URL}/api/v0/bgp?hostname=${DEVICE_ID}.${DOMAIN_SUFFIX}")"
 
-while read BGP_CONNECTION; do
+while read -r BGP_CONNECTION; do
   BGP_DEVICE_ID="$(jq '.device_id' <<<"$BGP_CONNECTION" | sed -e 's/"//g')"
   BGP_PEER="$(jq '.bgpPeerIdentifier' <<<"$BGP_CONNECTION" | sed -e 's/"//g')"
   BGP_STATE="$(jq '.bgpPeerState' <<<"$BGP_CONNECTION" | sed -e 's/"//g')"
 
   # Increase device total count
-  BGP_SESSIONS=$(($BGP_SESSIONS+1))
+  BGP_SESSIONS=$(( BGP_SESSIONS + 1 ))
 
   if [ "$BGP_STATE" != 'established' ]; then
     BGP_DEVICE_HOSTNAME="$(curl --silent --fail -H "X-Auth-Token: ${API_KEY}" "${API_URL}/api/v0/devices/${BGP_DEVICE_ID}" | jq '.devices[0] .hostname' | sed -e 's/"//g')"
@@ -119,7 +118,7 @@ while read BGP_CONNECTION; do
     fi
 
     # Increase device down count
-    BGP_SESSIONS_DOWN=$(($BGP_SESSIONS_DOWN+1))
+    BGP_SESSIONS_DOWN=$(( BGP_SESSIONS_DOWN + 1 ))
 
     ERR_CODE=$STATE_CRITICAL
     ERR_MSG="${ERR_MSG}${BGP_DEVICE_HOSTNAME} <> ${BGP_PEER}, "
